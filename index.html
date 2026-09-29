@@ -20,11 +20,11 @@
   .panel { position: absolute; z-index: 10; background: var(--bg); border: 1px solid var(--bd); border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,.18); }
 
   /* 검색 */
-  #search { left: 12px; top: calc(var(--top) + 12px); width: min(340px, calc(100vw - 92px)); padding: 6px; }
+  #search { left: 12px; top: calc(var(--top) + 12px); width: min(340px, calc(100vw - 92px)); padding: 6px; z-index: 25; }
   #search .row { display: flex; gap: 6px; }
   #search input { flex: 1; min-width: 0; border: 1px solid var(--bd); border-radius: 8px; padding: 8px 10px; font-size: 14px; }
   #search .go { border: 0; background: var(--pri); color: #fff; border-radius: 8px; padding: 0 12px; font-weight: bold; }
-  #results { margin-top: 6px; max-height: 300px; overflow: auto; display: none; }
+  #results { margin-top: 6px; max-height: min(320px, calc(100vh - var(--top) - 100px)); overflow: auto; display: none; }
   #results.open { display: block; }
   #results .item { padding: 8px 6px; border-top: 1px solid #eee; cursor: pointer; }
   #results .item:first-child { border-top: 0; }
@@ -753,6 +753,8 @@
         }
       });
     }
+    document.addEventListener('mousedown', function (e) { if (!$('search').contains(e.target)) closeResults(); }, true);
+    document.addEventListener('touchstart', function (e) { if (!$('search').contains(e.target)) closeResults(); }, true);
     $('q-go').onclick = doSearch;
     $('q').addEventListener('keydown', function (e) { if (e.key === 'Enter') doSearch(); });
 
