@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>드론 비행구역 맵 뷰어</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; }
+  #map { width: 100%; height: 100%; }
+  .panel {
+    position: absolute; z-index: 10; left: 12px;
+    background: rgba(255,255,255,.95); border: 1px solid #ddd; border-radius: 8px;
+    box-shadow: 0 4px 10px rgba(0,0,0,.2);
+    font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; font-size: 14px;
+  }
+  #control-panel { top: 12px; padding: 12px 14px; line-height: 2; }
+  #control-panel hr { margin: 4px 0; border: 0; border-top: 1px solid #ddd; }
+  .legend-color { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: middle; }
+  #status { display: none; bottom: 12px; padding: 8px 12px; max-width: 360px; font-size: 12px; line-height: 1.6; }
+  #status .err { color: #c62828; font-weight: bold; }
+  .iw { padding: 10px 12px; font-size: 13px; line-height: 1.6; min-width: 200px; max-width: 280px; }
+  .iw .item { margin-bottom: 6px; }
+  .iw .note { color: #777; font-size: 11px; border-top: 1px solid #eee; margin-top: 6px; padding-top: 6px; }
+</style>
+</head>
+<body>
+  <div id="control-panel" class="panel">
+    <strong>🗺️ 비행구역 레이어</strong><hr>
+    <div id="layer-list"></div>
+  </div>
+  <div id="status" class="panel"></div>
+  <div id="map"></div>
+
+  <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=f29cd6de070efc5b1e95584aa5fd9acd"></script>
+  <script>
+  (function () {
+    var statusEl = document.getElementById('status');
+    function say(msg, isError) {
+      var d = document.createElement('div');
+      d.textContent = msg;
+      if (isError) d.className = 'err';
+      statusEl.appendChild(d);
+      statusEl.style.display = 'block';
+    }
+
+    if (typeof kakao === 'undefined' || !kakao.maps) {
+      say('카카오 지도 SDK를 불러오지 못했어요. 카카오 개발자 콘솔의 [플랫폼 > Web]에 현재 접속 주소(' + location.origin + ')가 등록돼 있는지 확인하세요.', true);
+      return;
+    }
+
+    var map = new kakao.maps.Map(document.getElementById('map'), {
+      center: new kakao.maps.LatLng(37.566826, 126.9786567), level: 8
+    });
+    var infowindow = new kakao.maps.InfoWindow({ removable: true });
+
+    // 레이어 정의 (아래에 있을수록 위에 그려짐)
+    var LAYERS = [
+      { key: 'sigg',       file: 'data/sigg.geojson',       name: '시/군/구 행정계', color: '#555555', z: 1, kind: 'line' },
+      { key: 'controlled', file: 'data/controlled.geojson', name: '관제권 (공항 주변)', color: '#0000FF', z: 2, kind: 'area' },
+      { key: 'restricted', file: 'data/restricted.geojson', name: '비행제한구역',   color: '#FFA500', z: 3, kind: 'area' },
+      { key: 'prohibited', file: 'data/airspace.geojson',   name: '비행금지구역',   color: '#FF0000', z: 4, kind: 'area' }
+    ];
+    LAYERS.forEach(function (L) { L.overlays = []; L.records = []; L.visible = true; });
+
+    // ---------- 유틸 ----------
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
+    var NAME_KEYS = ['name', 'korean_nm', 'kor_nm', 'ais_nm', 'zone_nm', 'fac_name', 'nam', 'sig_kor_nm'];
+    // 브이월드 원본에 섞여 있는 <FNT ...>, <CLR ...>, <UND> 같은 서식 태그 제거
+    function cleanText(s) {
+      return String(s)
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+    function nameOf(p) {
+      if (!p) return '';
+      for (var i = 0; i < NAME_KEYS.length; i++) if (p[NAME_KEYS[i]]) return cleanText(p[NAME_KEYS[i]]);
+      for (var k in p) if (typeof p[k] === 'string' && cleanText(p[k])) return cleanText(p[k]);
+      return '';
+    }
+    function toPolygons(geom) {
+      if (!geom) return [];
+      if (geom.type === 'Polygon') return [geom.coordinates];
+      if (geom.type === 'MultiPolygon') return geom.coordinates;
+      return [];
+    }
+    function ringPath(ring) {
+      return ring.map(function (c) { return new kakao.maps.LatLng(c[1], c[0]); });
+    }
+    function pointInRing(x, y, ring) {
+      var inside = false;
+      for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        var xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+        if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+      }
+      return inside;
+    }
+    function inPolygon(x, y, rings) {   // rings[0] = 바깥 링, 나머지 = 구멍
+      if (!pointInRing(x, y, rings[0])) return false;
+      for (var i = 1; i < rings.length; i++) if (pointInRing(x, y, rings[i])) return false;
+      return true;
+    }
+    function bboxOf(ring) {
+      var b = [Infinity, Infinity, -Infinity, -Infinity];
+      ring.forEach(function (c) {
+        if (c[0] < b[0]) b[0] = c[0]; if (c[1] < b[1]) b[1] = c[1];
+        if (c[0] > b[2]) b[2] = c[0]; if (c[1] > b[3]) b[3] = c[1];
+      });
+      return b;
+    }
+
+    // ---------- 클릭 처리 (도형/빈 지도 공통) ----------
+    var lastClick = 0;
+    function handleClick(latLng) {
+      var now = Date.now();
+      if (now - lastClick < 150) return;   // 도형 클릭 + 지도 클릭 중복 방지
+      lastClick = now;
+
+      var x = latLng.getLng(), y = latLng.getLat();
+      var hits = [], seen = {};
+      LAYERS.slice().sort(function (a, b) { return b.z - a.z; }).forEach(function (L) {
+        if (L.kind !== 'area' || !L.visible) return;
+        L.records.forEach(function (r) {
+          if (x < r.bbox[0] || y < r.bbox[1] || x > r.bbox[2] || y > r.bbox[3]) return;
+          if (!inPolygon(x, y, r.rings)) return;
+          var id = L.key + '|' + r.name;
+          if (seen[id]) return;
+          seen[id] = true;
+          hits.push({ L: L, r: r });
+        });
+      });
+
+      var html = '<div class="iw">';
+      if (hits.length) {
+        hits.forEach(function (h) {
+          html += '<div class="item"><strong style="color:' + h.L.color + ';">🚨 ' + esc(h.L.name) + '</strong><br>' +
+                  '<span>' + esc(h.r.name || '(이름 정보 없음)') + '</span></div>';
+        });
+      } else {
+        html += '<div class="item"><strong style="color:#2e7d32;">표시된 제한구역 없음</strong><br>' +
+                '<span style="font-size:12px;">이 지도에 포함된 레이어 기준입니다.</span></div>';
+      }
+      html += '<div class="note">※ 참고용 정보입니다. 군사시설·고도제한·임시 비행금지(NOTAM) 등은 표시되지 않으므로 ' +
+              '실제 비행 전 <a href="https://drone.onestop.go.kr" target="_blank" rel="noopener">드론원스톱</a>에서 꼭 확인하세요.</div></div>';
+
+      infowindow.setContent(html);
+      infowindow.setPosition(latLng);
+      infowindow.open(map);
+    }
+    kakao.maps.event.addListener(map, 'click', function (e) { handleClick(e.latLng); });
+
+    // ---------- 레이어 로드 ----------
+    async function loadLayer(L) {
+      var res;
+      try {
+        res = await fetch(L.file);
+      } catch (e) {
+        say(L.name + ': 파일을 불러오지 못했어요. index.html을 더블클릭(file://)으로 열지 말고 서버로 여세요.', true);
+        return;
+      }
+      if (!res.ok) {
+        say(L.name + ': ' + L.file + ' 없음 (HTTP ' + res.status + '). scripts/download_data.py 를 먼저 실행하세요.', true);
+        return;
+      }
+      var data;
+      try { data = await res.json(); }
+      catch (e) { say(L.name + ': JSON 형식 오류 - 파일을 다시 다운로드하세요.', true); return; }
+
+      var feats = data.features || [];
+      feats.forEach(function (f) {
+        var nm = nameOf(f.properties);
+        toPolygons(f.geometry).forEach(function (rings) {
+          if (!rings.length) return;
+          if (L.kind === 'line') {
+            rings.forEach(function (ring) {
+              var line = new kakao.maps.Polyline({
+                path: ringPath(ring), strokeWeight: 1.5, strokeColor: L.color, strokeOpacity: 0.7, zIndex: L.z
+              });
+              line.setMap(map);
+              L.overlays.push(line);
+            });
+          } else {
+            var poly = new kakao.maps.Polygon({
+              path: rings.map(ringPath),          // 바깥 링 + 구멍 모두 전달
+              strokeWeight: 2, strokeColor: L.color, strokeOpacity: 0.8,
+              fillColor: L.color, fillOpacity: 0.3, zIndex: L.z
+            });
+            poly.setMap(map);
+            kakao.maps.event.addListener(poly, 'click', function (e) { handleClick(e.latLng); });
+            L.overlays.push(poly);
+            L.records.push({ rings: rings, bbox: bboxOf(rings[0]), name: nm });
+          }
+        });
+      });
+      if (!L.visible) L.overlays.forEach(function (o) { o.setMap(null); });
+      say(L.name + ': ' + feats.length + '개 로드');
+    }
+
+    // ---------- 레이어 패널 ----------
+    var listEl = document.getElementById('layer-list');
+    LAYERS.slice().sort(function (a, b) { return b.z - a.z; }).forEach(function (L) {
+      var label = document.createElement('label');
+      var cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = true;
+      cb.addEventListener('change', function () {
+        L.visible = cb.checked;
+        L.overlays.forEach(function (o) { o.setMap(cb.checked ? map : null); });
+        infowindow.close();
+      });
+      var sw = document.createElement('span');
+      sw.className = 'legend-color'; sw.style.background = L.color;
+      label.appendChild(cb); label.appendChild(document.createTextNode(' ')); label.appendChild(sw);
+      label.appendChild(document.createTextNode(L.name));
+      listEl.appendChild(label); listEl.appendChild(document.createElement('br'));
+    });
+
+    LAYERS.forEach(loadLayer);
+  })();
+  </script>
+</body>
+</html>
