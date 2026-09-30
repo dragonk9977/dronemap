@@ -297,6 +297,20 @@
     try { map.addControl(new kakao.maps.ZoomControl(), kakao.maps.ControlPosition.BOTTOMRIGHT); } catch (e) {}
 
     /* ---------- 레이어 정의 ---------- */
+    function joinParts(arr) {
+      var out = [];
+      arr.forEach(function (x) { x = x ? cleanText(x) : ''; if (x && out.indexOf(x) < 0) out.push(x); });
+      return out.join(' · ');
+    }
+    function describeTemp(p) {      // 임시비행금지: 구역 라벨 + NOTAM 번호
+      var t = joinParts([p.prh_lbl_1, p.prh_lbl_2, p.prh_lbl_3]);
+      return joinParts([t, p.notam ? 'NOTAM ' + cleanText(p.notam) : '']) || nameOf(p);
+    }
+    function describeDroneZone(p) { // 드론시범사업구역: 이름 + 고도 + 비고(길면 자름)
+      var r = p.remarks ? cleanText(p.remarks) : '';
+      if (r.length > 60) r = r.slice(0, 60) + '…';
+      return joinParts([p.name, p.vertical ? '고도 ' + cleanText(p.vertical) : '', r]) || nameOf(p);
+    }
     // role: restrict(제한·주의, 기본) / permit(허용공역) / info(참고). optional: 데이터 파일이 없어도 오류로 보지 않음
     var LAYERS = [
       { key: 'sigg',       file: 'data/sigg.geojson',       name: '시/군/구 행정계 (경계선)', short: '행정계',       color: '#555555', z: 1,  kind: 'line', nameKeys: ['sig_kor_nm', 'full_nm', 'name'] },
@@ -305,10 +319,10 @@
       { key: 'atz',        file: 'data/atz.geojson',        name: '비행장교통구역',           short: '비행장교통구역', color: '#607D8B', z: 4,  kind: 'area', optional: true },
       { key: 'acm',        file: 'data/acm.geojson',        name: '공중전투기동훈련장',       short: '공중전투기동훈련장', color: '#A1887F', z: 5, kind: 'area', optional: true },
       { key: 'danger',     file: 'data/danger.geojson',     name: '위험구역',                 short: '위험구역',     color: '#26C6DA', z: 6,  kind: 'area', optional: true },
-      { key: 'dronezone',  file: 'data/dronezone.geojson',  name: '드론시범사업구역',         short: '드론시범사업구역', color: '#66BB6A', z: 7, kind: 'area', role: 'info', optional: true, defaultOff: true },
+      { key: 'dronezone',  file: 'data/dronezone.geojson',  name: '드론시범사업구역',         short: '드론시범사업구역', color: '#66BB6A', z: 7, kind: 'area', role: 'info', optional: true, defaultOff: true, describe: describeDroneZone },
       { key: 'restricted', file: 'data/restricted.geojson', name: '비행제한구역',             short: '비행제한구역', color: '#FFA500', z: 8,  kind: 'area' },
       { key: 'prohibited', file: 'data/airspace.geojson',   name: '비행금지구역',             short: '비행금지구역', color: '#FF0000', z: 9,  kind: 'area' },
-      { key: 'temp',       file: 'data/temp.geojson',       name: '임시비행금지구역',         short: '임시비행금지구역', color: '#D81B60', z: 10, kind: 'area', optional: true }
+      { key: 'temp',       file: 'data/temp.geojson',       name: '임시비행금지구역',         short: '임시비행금지구역', color: '#D81B60', z: 10, kind: 'area', optional: true, describe: describeTemp }
     ];
     LAYERS.forEach(function (L) { L.overlays = []; L.records = []; L.regions = []; L.visible = !L.defaultOff; L.loaded = false; });
     var selRegions = {}, selCount = 0;
@@ -505,14 +519,15 @@
       try { data = await res.json(); }
       catch (e) { say(L.name + ': JSON 형식 오류 - 파일을 다시 다운로드하세요.', true); return; }
 
-      var feats = data.features || [];
+      var feats = data.features || [], unsupported = 0;
       feats.forEach(function (f, fi) {
-        var nm = nameOf(f.properties, L.nameKeys), F = null;
+        var nm = L.describe ? L.describe(f.properties || {}) : nameOf(f.properties, L.nameKeys), F = null;
         if (L.kind === 'line') {
           var meta = regionMeta(f.properties, nm);
           F = { id: fi, label: meta.label, name: meta.name, sido: meta.sido, order: meta.order, bbox: [Infinity, Infinity, -Infinity, -Infinity], lines: [] };
           L.regions.push(F);
         }
+        if (f.geometry && f.geometry.type !== 'Polygon' && f.geometry.type !== 'MultiPolygon') unsupported++;
         toPolygons(f.geometry).forEach(function (rings) {
           if (!rings.length) return;
           var bb = bboxOf(rings[0]);
@@ -544,6 +559,7 @@
       if (L.kind === 'line') { buildRegionUI(); applyRegionFilter(); }
       var c = $('cnt-' + L.key); if (c) c.textContent = feats.length + '개';
       say(L.name + ': ' + feats.length + '개 로드');
+      if (unsupported) say(L.name + ': ' + unsupported + '개는 면(폴리곤)이 아닌 도형이라 표시하지 못했어요.', true);
     }
 
     /* ---------- 레이어 패널 ---------- */
