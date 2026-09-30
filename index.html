@@ -91,6 +91,8 @@
   .zrow .dot { margin-top: 4px; }
   .zrow small { color: var(--sub); }
   .in { color: #c62828; font-weight: bold; }
+  .okin { color: #2e7d32; font-weight: bold; }
+  .verdict.info { background: #e8f0fe; border-color: #c5d7fb; }
   .dist { color: #1565c0; font-weight: bold; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .chip { border: 1px solid var(--bd); background: #fff; border-radius: 16px; padding: 4px 10px; font-size: 12px; }
@@ -294,13 +296,20 @@
     try { map.addControl(new kakao.maps.ZoomControl(), kakao.maps.ControlPosition.BOTTOMRIGHT); } catch (e) {}
 
     /* ---------- 레이어 정의 ---------- */
+    // role: restrict(제한·주의, 기본) / permit(허용공역) / info(참고). optional: 데이터 파일이 없어도 오류로 보지 않음
     var LAYERS = [
-      { key: 'sigg',       file: 'data/sigg.geojson',       name: '시/군/구 행정계 (경계선)', short: '행정계',       color: '#555555', z: 1, kind: 'line', nameKeys: ['sig_kor_nm', 'full_nm', 'name'] },
-      { key: 'controlled', file: 'data/controlled.geojson', name: '관제권 (공항 주변)',       short: '관제권',       color: '#0000FF', z: 2, kind: 'area' },
-      { key: 'restricted', file: 'data/restricted.geojson', name: '비행제한구역',             short: '비행제한구역', color: '#FFA500', z: 3, kind: 'area' },
-      { key: 'prohibited', file: 'data/airspace.geojson',   name: '비행금지구역',             short: '비행금지구역', color: '#FF0000', z: 4, kind: 'area' }
+      { key: 'sigg',       file: 'data/sigg.geojson',       name: '시/군/구 행정계 (경계선)', short: '행정계',       color: '#555555', z: 1,  kind: 'line', nameKeys: ['sig_kor_nm', 'full_nm', 'name'] },
+      { key: 'ua',         file: 'data/ua.geojson',         name: '초경량비행장치 허용공역', short: '초경량비행장치 허용공역', color: '#43A047', z: 2,  kind: 'area', role: 'permit', optional: true, defaultOff: true },
+      { key: 'controlled', file: 'data/controlled.geojson', name: '관제권 (공항 주변)',       short: '관제권',       color: '#0000FF', z: 3,  kind: 'area' },
+      { key: 'atz',        file: 'data/atz.geojson',        name: '비행장교통구역',           short: '비행장교통구역', color: '#607D8B', z: 4,  kind: 'area', optional: true },
+      { key: 'acm',        file: 'data/acm.geojson',        name: '공중전투기동훈련장',       short: '공중전투기동훈련장', color: '#A1887F', z: 5, kind: 'area', optional: true },
+      { key: 'danger',     file: 'data/danger.geojson',     name: '위험구역',                 short: '위험구역',     color: '#26C6DA', z: 6,  kind: 'area', optional: true },
+      { key: 'dronezone',  file: 'data/dronezone.geojson',  name: '드론시범사업구역',         short: '드론시범사업구역', color: '#66BB6A', z: 7, kind: 'area', role: 'info', optional: true, defaultOff: true },
+      { key: 'restricted', file: 'data/restricted.geojson', name: '비행제한구역',             short: '비행제한구역', color: '#FFA500', z: 8,  kind: 'area' },
+      { key: 'prohibited', file: 'data/airspace.geojson',   name: '비행금지구역',             short: '비행금지구역', color: '#FF0000', z: 9,  kind: 'area' },
+      { key: 'temp',       file: 'data/temp.geojson',       name: '임시비행금지구역',         short: '임시비행금지구역', color: '#D81B60', z: 10, kind: 'area', optional: true }
     ];
-    LAYERS.forEach(function (L) { L.overlays = []; L.records = []; L.regions = []; L.visible = true; L.loaded = false; });
+    LAYERS.forEach(function (L) { L.overlays = []; L.records = []; L.regions = []; L.visible = !L.defaultOff; L.loaded = false; });
     var selRegions = {}, selCount = 0;
     var AREA = LAYERS.filter(function (L) { return L.kind === 'area'; });
     var SIGG = LAYERS[0];
@@ -457,10 +466,16 @@
     kakao.maps.event.addListener(map, 'click', function (e) { onMapClick(e.latLng); });
 
     /* ---------- 레이어 로드 ---------- */
+    function markMissing(L) {
+      L.missing = true;
+      var c = $('cnt-' + L.key); if (c) c.textContent = '미설치';
+      if (L.cb) { L.cb.disabled = true; L.cb.checked = false; }
+    }
     async function loadLayer(L) {
       var res;
       try { res = await fetch(L.file); }
-      catch (e) { say(L.name + ': 파일을 불러오지 못했어요. index.html을 더블클릭(file://)으로 열지 말고 서버로 여세요.', true); return; }
+      catch (e) { if (L.optional) { markMissing(L); return; } say(L.name + ': 파일을 불러오지 못했어요. index.html을 더블클릭(file://)으로 열지 말고 서버로 여세요.', true); return; }
+      if (!res.ok && L.optional && res.status === 404) { markMissing(L); return; }
       if (!res.ok) { say(L.name + ': ' + L.file + ' 없음 (HTTP ' + res.status + '). scripts/download_data.py 를 먼저 실행하세요.', true); return; }
       var data;
       try { data = await res.json(); }
@@ -508,6 +523,7 @@
 
     /* ---------- 레이어 패널 ---------- */
     function setVisible(L, v) {
+      if (L.missing) return;
       L.visible = v;
       if (L.cb) L.cb.checked = v;
       if (L === SIGG) applyRegionFilter();
@@ -521,6 +537,7 @@
       row.innerHTML = '<input type="checkbox" checked><span class="dot" style="background:' + L.color + '"></span>' +
         '<span class="lname">' + esc(L.name) + '</span><span class="cnt" id="cnt-' + L.key + '"></span>';
       L.cb = row.querySelector('input');
+      L.cb.checked = L.visible !== false;
       L.cb.addEventListener('change', function () {
         if (isFav) { favLayer.visible = L.cb.checked; renderFavMarkers(); }
         else { setVisible(L, L.cb.checked); closeDetail(); }
@@ -710,8 +727,10 @@
       var a = analyze(lat, lng);
       cur.regionRec = a.regionRec || null;
 
-      var notReady = AREA.filter(function (L) { return !L.loaded; });
-      var hitLayers = a.perLayer.filter(function (p) { return p.hits.length; });
+      var notReady = AREA.filter(function (L) { return !L.loaded && !L.optional; });
+      var isInfo = function (L) { return L.role === 'permit' || L.role === 'info'; };
+      var hitLayers = a.perLayer.filter(function (p) { return p.hits.length && !isInfo(p.L); });
+      var infoHits = a.perLayer.filter(function (p) { return p.hits.length && isInfo(p.L); });
       var verdict;
       if (hitLayers.length) {
         var top = hitLayers[0].L, total = 0;
@@ -726,10 +745,15 @@
         verdict = '<div class="verdict"><b>표시된 제한구역 없음</b><small>이 지도의 레이어 기준이며, 비행이 가능하다는 뜻이 아니에요.</small></div>';
       }
 
+      if (infoHits.length) {
+        verdict += '<div class="verdict info"><small>ℹ️ 참고: ' + infoHits.map(function (p) { return esc(p.L.short); }).join(', ') + ' 안에 있어요. 제한구역 여부와는 별개예요.</small></div>';
+      }
+
       var zrows = a.perLayer.map(function (p) {
         var L = p.L, body;
+        if (!L.loaded && L.optional) return '';
         if (!L.loaded) body = '<b>' + esc(L.short) + '</b> <small>데이터 없음</small>';
-        else if (p.hits.length) body = '<b>' + esc(L.short) + '</b> <span class="in">내부</span><br><small>' + p.hits.map(esc).join(', ') + '</small>';
+        else if (p.hits.length) body = '<b>' + esc(L.short) + '</b> <span class="' + (isInfo(L) ? 'okin' : 'in') + '">내부</span><br><small>' + p.hits.map(esc).join(', ') + '</small>';
         else if (isFinite(p.dist)) body = '<b>' + esc(L.short) + '</b> <span class="dist">' + fmtDist(p.dist) + '</span><br><small>가장 가까운 곳: ' + esc(p.nearName) + '</small>';
         else body = '<b>' + esc(L.short) + '</b> <small>주변에 없음</small>';
         return '<div class="zrow"><span class="dot" style="background:' + L.color + '"></span><div>' + body + '</div></div>';
@@ -740,7 +764,7 @@
         radiusHtml = a.within.length
           ? a.within.map(function (w) {
               return '<div class="zrow"><span class="dot" style="background:' + w.L.color + '"></span><div><b>' + esc(w.L.short) + '</b> ' +
-                     (w.d === 0 ? '<span class="in">내부</span>' : '<span class="dist">' + fmtDist(w.d) + '</span>') + '<br><small>' + esc(w.name) + '</small></div></div>';
+                     (w.d === 0 ? '<span class="' + (w.L.role === 'permit' || w.L.role === 'info' ? 'okin' : 'in') + '">내부</span>' : '<span class="dist">' + fmtDist(w.d) + '</span>') + '<br><small>' + esc(w.name) + '</small></div></div>';
             }).join('')
           : '<small>반경 ' + fmtDist(radiusM) + ' 안에 표시된 구역이 없어요.</small>';
       }
@@ -1120,6 +1144,8 @@
     }
     renderFavMarkers();
     Promise.all(LAYERS.map(loadLayer)).then(function () {
+      var miss = LAYERS.filter(function (L) { return L.missing; }).length;
+      if (miss) say('추가 공역 ' + miss + '종은 아직 설치되지 않았어요 (scripts/download_data.py 재실행)');
       if (hash) openDetail(+hash[1], +hash[2], {});
       hideStatusLater();
     });
