@@ -183,6 +183,7 @@
         <label><input type="checkbox" id="ov-district"> 지적편집도</label>
         <label><input type="checkbox" id="ov-terrain"> 지형</label>
       </div>
+      <div id="upd" class="rf-hint" style="margin-top:8px;"></div>
     </div>
   </div>
 
@@ -465,6 +466,29 @@
     }
     kakao.maps.event.addListener(map, 'click', function (e) { onMapClick(e.latLng); });
 
+    /* ---------- 데이터 저장일 (data/updated.json) ---------- */
+    var UPDATED = {};
+    function baseName(f) { return String(f).split('/').pop(); }
+    function ageDays(iso) { var t = Date.parse(iso); return isNaN(t) ? null : Math.floor((Date.now() - t) / 86400000); }
+    function renderUpdated() {
+      var el = $('upd'); if (!el) return;
+      var oldest = null, unknown = 0, any = false;
+      LAYERS.forEach(function (L) {
+        if (!L.loaded) return;
+        var d = UPDATED[baseName(L.file)];
+        if (!d) { unknown++; return; }
+        any = true;
+        if (oldest === null || d < oldest) oldest = d;
+      });
+      if (!any) { el.textContent = ''; return; }
+      var txt = '📅 구역 데이터 저장일: ' + oldest.slice(0, 10) + (unknown ? ' 이후 (일부 파일은 기록 없음)' : ' (가장 오래된 파일 기준)');
+      var t = UPDATED['temp.geojson'];
+      if (t && LAYERS.some(function (L) { return L.key === 'temp' && L.loaded; })) txt += ' · 임시비행금지: ' + t.slice(0, 10);
+      el.textContent = txt + ' — 저장 이후 바뀐 구역은 반영되지 않아요.';
+    }
+    fetch('data/updated.json').then(function (r) { return r.ok ? r.json() : {}; })
+      .then(function (j) { UPDATED = j || {}; renderUpdated(); }).catch(function () {});
+
     /* ---------- 레이어 로드 ---------- */
     function markMissing(L) {
       L.missing = true;
@@ -516,6 +540,7 @@
         });
       });
       L.loaded = true;
+      renderUpdated();
       if (L.kind === 'line') { buildRegionUI(); applyRegionFilter(); }
       var c = $('cnt-' + L.key); if (c) c.textContent = feats.length + '개';
       say(L.name + ': ' + feats.length + '개 로드');
@@ -749,11 +774,16 @@
         verdict += '<div class="verdict info"><small>ℹ️ 참고: ' + infoHits.map(function (p) { return esc(p.L.short); }).join(', ') + ' 안에 있어요. 제한구역 여부와는 별개예요.</small></div>';
       }
 
+      function staleNote(L) {
+        if (L.key !== 'temp') return '';
+        var d = UPDATED['temp.geojson'], n = d ? ageDays(d) : null;
+        return n === null ? '' : ' <small>(저장 ' + n + '일 전 자료)</small>';
+      }
       var zrows = a.perLayer.map(function (p) {
         var L = p.L, body;
         if (!L.loaded && L.optional) return '';
         if (!L.loaded) body = '<b>' + esc(L.short) + '</b> <small>데이터 없음</small>';
-        else if (p.hits.length) body = '<b>' + esc(L.short) + '</b> <span class="' + (isInfo(L) ? 'okin' : 'in') + '">내부</span><br><small>' + p.hits.map(esc).join(', ') + '</small>';
+        else if (p.hits.length) body = '<b>' + esc(L.short) + '</b> <span class="' + (isInfo(L) ? 'okin' : 'in') + '">내부</span>' + staleNote(L) + '<br><small>' + p.hits.map(esc).join(', ') + '</small>';
         else if (isFinite(p.dist)) body = '<b>' + esc(L.short) + '</b> <span class="dist">' + fmtDist(p.dist) + '</span><br><small>가장 가까운 곳: ' + esc(p.nearName) + '</small>';
         else body = '<b>' + esc(L.short) + '</b> <small>주변에 없음</small>';
         return '<div class="zrow"><span class="dot" style="background:' + L.color + '"></span><div>' + body + '</div></div>';
