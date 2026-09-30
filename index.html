@@ -52,6 +52,17 @@
   .opt { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; }
   .opt label { cursor: pointer; }
 
+  /* 행정계 지역 필터 */
+  #rf { margin-top: 2px; }
+  .rf-title { display: flex; justify-content: space-between; font-weight: bold; font-size: 13px; margin-bottom: 6px; }
+  #rf-state { color: var(--pri); font-weight: bold; }
+  #rf select, #rf input[type=text] { width: 100%; border: 1px solid var(--bd); border-radius: 8px; padding: 6px 8px; font-size: 13px; font-family: inherit; margin-bottom: 6px; background: #fff; }
+  .rf-list { max-height: 150px; overflow: auto; border: 1px solid #e5e5e5; border-radius: 8px; padding: 4px 8px; margin-bottom: 6px; background: #fff; }
+  .rf-item { display: block; padding: 3px 0; font-size: 13px; cursor: pointer; }
+  #rf-sel { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+  #rf-sel .chip { font-size: 11px; padding: 2px 8px; background: #e8f0fe; border-color: #c5d7fb; }
+  .rf-hint { font-size: 11px; color: var(--sub); line-height: 1.5; }
+
   /* 도구 */
   #tools { right: 12px; top: calc(var(--top) + 12px); display: flex; flex-direction: column; gap: 6px; background: none; border: 0; box-shadow: none; }
   .tool { width: 56px; padding: 6px 0 4px; background: var(--bg); border: 1px solid var(--bd); border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,.18); display: flex; flex-direction: column; align-items: center; gap: 2px; }
@@ -149,6 +160,16 @@
     <div class="body">
       <div class="mini"><button id="all-on">전체 ON</button><button id="all-off">전체 OFF</button></div>
       <div id="layers-body"></div>
+      <hr class="sep">
+      <div id="rf">
+        <div class="rf-title"><span>🏙️ 행정계 표시 지역</span><span id="rf-state">전체</span></div>
+        <select id="rf-sido"><option value="">전체 시/도</option></select>
+        <input type="text" id="rf-q" placeholder="시/군/구 검색 (예: 수원)" autocomplete="off">
+        <div id="rf-list" class="rf-list"><small>행정계 데이터를 불러오는 중…</small></div>
+        <div id="rf-sel"></div>
+        <div class="mini"><button id="rf-all">목록 전체 선택</button><button id="rf-clear">선택 해제</button><button id="rf-fit">📍 이동</button></div>
+        <div class="rf-hint">지역을 선택하면 그 지역의 행정계만 표시돼요. 선택이 없으면 전체가 표시돼요.</div>
+      </div>
       <hr class="sep">
       <div class="slider"><span>구역 투명도</span><input type="range" id="op" min="0" max="60" value="30"><span id="op-v">30%</span></div>
       <hr class="sep">
@@ -279,10 +300,41 @@
       { key: 'restricted', file: 'data/restricted.geojson', name: '비행제한구역',             short: '비행제한구역', color: '#FFA500', z: 3, kind: 'area' },
       { key: 'prohibited', file: 'data/airspace.geojson',   name: '비행금지구역',             short: '비행금지구역', color: '#FF0000', z: 4, kind: 'area' }
     ];
-    LAYERS.forEach(function (L) { L.overlays = []; L.records = []; L.visible = true; L.loaded = false; });
+    LAYERS.forEach(function (L) { L.overlays = []; L.records = []; L.regions = []; L.visible = true; L.loaded = false; });
+    var selRegions = {}, selCount = 0;
     var AREA = LAYERS.filter(function (L) { return L.kind === 'area'; });
     var SIGG = LAYERS[0];
     var fillOp = 0.3;
+
+    /* ---------- 행정구역 메타 (시/도 분류) ---------- */
+    var SIDO_LIST = [ // [코드, 정식명, 약칭]
+      ['11', '서울특별시', '서울'], ['26', '부산광역시', '부산'], ['27', '대구광역시', '대구'], ['28', '인천광역시', '인천'],
+      ['29', '광주광역시', '광주'], ['30', '대전광역시', '대전'], ['31', '울산광역시', '울산'], ['36', '세종특별자치시', '세종'],
+      ['41', '경기도', '경기'], ['42', '강원도', '강원'], ['51', '강원특별자치도', '강원'], ['43', '충청북도', '충북'],
+      ['44', '충청남도', '충남'], ['45', '전라북도', '전북'], ['52', '전북특별자치도', '전북'], ['46', '전라남도', '전남'],
+      ['47', '경상북도', '경북'], ['48', '경상남도', '경남'], ['50', '제주특별자치도', '제주']
+    ];
+    function pick(p, re) {
+      for (var k in p) if (re.test(k) && p[k] != null && String(p[k]).trim() !== '') return cleanText(p[k]);
+      return '';
+    }
+    function regionMeta(p, fallbackName) {
+      var code = pick(p, /^(sig_cd|sigungu_cd|sgg_cd|adm_cd)$/i);
+      var name = pick(p, /^(sig_kor_nm|sigungu_nm|sgg_nm|kor_nm)$/i) || fallbackName || '';
+      var full = pick(p, /^full_nm$/i);
+      var sido = '', order = 99, i;
+      if (code) {
+        for (i = 0; i < SIDO_LIST.length; i++) if (SIDO_LIST[i][0] === code.slice(0, 2)) { sido = SIDO_LIST[i][2]; order = i; break; }
+      }
+      if (!sido && full && full.indexOf(' ') > 0) {
+        var first = full.split(' ')[0];
+        for (i = 0; i < SIDO_LIST.length; i++) if (SIDO_LIST[i][1] === first || SIDO_LIST[i][2] === first) { sido = SIDO_LIST[i][2]; order = i; break; }
+        if (!sido) sido = first;
+      }
+      var label = sido && name.indexOf(sido) < 0 ? sido + ' ' + name : name;
+      return { name: name, sido: sido, order: order, label: label };
+    }
+    function regionShown(F) { return !selCount || !!(F && selRegions[F.id]); }
 
     /* ---------- 유틸 (구역 이름 정리) ---------- */
     function cleanText(s) {
@@ -415,17 +467,27 @@
       catch (e) { say(L.name + ': JSON 형식 오류 - 파일을 다시 다운로드하세요.', true); return; }
 
       var feats = data.features || [];
-      feats.forEach(function (f) {
-        var nm = nameOf(f.properties, L.nameKeys);
+      feats.forEach(function (f, fi) {
+        var nm = nameOf(f.properties, L.nameKeys), F = null;
+        if (L.kind === 'line') {
+          var meta = regionMeta(f.properties, nm);
+          F = { id: fi, label: meta.label, name: meta.name, sido: meta.sido, order: meta.order, bbox: [Infinity, Infinity, -Infinity, -Infinity], lines: [] };
+          L.regions.push(F);
+        }
         toPolygons(f.geometry).forEach(function (rings) {
           if (!rings.length) return;
-          L.records.push({ rings: rings, bbox: bboxOf(rings[0]), name: nm });
+          var bb = bboxOf(rings[0]);
+          L.records.push({ rings: rings, bbox: bb, name: nm, feat: F });
+          if (F) {
+            if (bb[0] < F.bbox[0]) F.bbox[0] = bb[0]; if (bb[1] < F.bbox[1]) F.bbox[1] = bb[1];
+            if (bb[2] > F.bbox[2]) F.bbox[2] = bb[2]; if (bb[3] > F.bbox[3]) F.bbox[3] = bb[3];
+          }
           if (L.kind === 'line') {
             rings.forEach(function (ring) {
               var line = new kakao.maps.Polyline({ path: ringPath(ring), strokeWeight: 1.5, strokeColor: L.color, strokeOpacity: 0.7, zIndex: L.z });
-              line.setMap(L.visible ? map : null);
+              line.setMap(L.visible && regionShown(F) ? map : null);
               kakao.maps.event.addListener(line, 'click', function (e) { onMapClick(e.latLng); });
-              L.overlays.push(line);
+              L.overlays.push(line); F.lines.push(line);
             });
           } else {
             var poly = new kakao.maps.Polygon({
@@ -439,6 +501,7 @@
         });
       });
       L.loaded = true;
+      if (L.kind === 'line') { buildRegionUI(); applyRegionFilter(); }
       var c = $('cnt-' + L.key); if (c) c.textContent = feats.length + '개';
       say(L.name + ': ' + feats.length + '개 로드');
     }
@@ -447,7 +510,8 @@
     function setVisible(L, v) {
       L.visible = v;
       if (L.cb) L.cb.checked = v;
-      L.overlays.forEach(function (o) { o.setMap(v ? map : null); });
+      if (L === SIGG) applyRegionFilter();
+      else L.overlays.forEach(function (o) { o.setMap(v ? map : null); });
       if (L === SIGG) $('t-sigg').classList.toggle('on', v);
     }
     var favLayer = { key: 'fav', name: '⭐ 내 장소', color: '#f9a825', visible: true };
@@ -489,6 +553,83 @@
     bindOverlay('ov-district', kakao.maps.MapTypeId.USE_DISTRICT);
     bindOverlay('ov-terrain', kakao.maps.MapTypeId.TERRAIN);
 
+    /* ---------- 행정계 지역 필터 ---------- */
+    var rfSido = '', rfQuery = '';
+    function recount() { selCount = Object.keys(selRegions).length; }
+    function applyRegionFilter() {
+      SIGG.regions.forEach(function (F) {
+        var show = SIGG.visible && regionShown(F);
+        F.lines.forEach(function (l) {
+          l.setMap(show ? map : null);
+          l.setOptions(selCount ? { strokeWeight: 3, strokeColor: '#222222', strokeOpacity: 0.95 } : { strokeWeight: 1.5, strokeColor: SIGG.color, strokeOpacity: 0.7 });
+        });
+      });
+    }
+    function regionsByFilter() {
+      var q = rfQuery.toLowerCase();
+      return SIGG.regions.filter(function (F) {
+        if (rfSido && F.sido !== rfSido) return false;
+        if (q && (F.label + ' ' + F.name).toLowerCase().indexOf(q) < 0) return false;
+        return true;
+      }).sort(function (a, b) { return a.order - b.order || (a.name < b.name ? -1 : (a.name > b.name ? 1 : 0)); });
+    }
+    function renderRegionSummary() {
+      $('rf-state').textContent = selCount ? selCount + '개 지역만' : '전체';
+      var sel = SIGG.regions.filter(function (F) { return selRegions[F.id]; });
+      $('rf-sel').innerHTML = sel.slice(0, 8).map(function (F) {
+        return '<button class="chip" data-id="' + F.id + '" title="선택 해제">' + esc(F.label) + ' ✕</button>';
+      }).join('') + (sel.length > 8 ? '<small>+' + (sel.length - 8) + '개</small>' : '');
+    }
+    function renderRegionList() {
+      var el = $('rf-list');
+      if (!SIGG.loaded) { el.innerHTML = '<small>행정계 데이터를 불러오는 중…</small>'; return; }
+      var list = regionsByFilter();
+      el.innerHTML = list.length
+        ? list.map(function (F) {
+            return '<label class="rf-item"><input type="checkbox" data-id="' + F.id + '"' + (selRegions[F.id] ? ' checked' : '') + '> ' + esc(rfSido ? F.name : F.label) + '</label>';
+          }).join('')
+        : '<small>검색 결과가 없어요.</small>';
+      renderRegionSummary();
+    }
+    function regionChanged() {
+      recount();
+      if (selCount && !SIGG.visible) setVisible(SIGG, true); else applyRegionFilter();
+      renderRegionSummary();
+    }
+    function fitRegions(list) {
+      var b = new kakao.maps.LatLngBounds(), n = 0;
+      list.forEach(function (F) {
+        if (!isFinite(F.bbox[0])) return;
+        b.extend(new kakao.maps.LatLng(F.bbox[1], F.bbox[0])); b.extend(new kakao.maps.LatLng(F.bbox[3], F.bbox[2])); n++;
+      });
+      if (n) map.setBounds(b, 60, 60, 60, 60); else toast('이동할 지역을 선택하거나 검색해 주세요');
+    }
+    function buildRegionUI() {
+      var seen = {}, opts = [];
+      SIGG.regions.forEach(function (F) { if (F.sido && !seen[F.sido]) { seen[F.sido] = 1; opts.push(F); } });
+      opts.sort(function (a, b) { return a.order - b.order; });
+      $('rf-sido').innerHTML = '<option value="">전체 시/도</option>' + opts.map(function (F) { return '<option value="' + esc(F.sido) + '">' + esc(F.sido) + '</option>'; }).join('');
+      $('rf-sido').style.display = opts.length ? '' : 'none';
+      renderRegionList();
+    }
+    $('rf-sido').onchange = function () { rfSido = this.value; renderRegionList(); };
+    $('rf-q').oninput = function () { rfQuery = this.value.trim(); renderRegionList(); };
+    $('rf-list').addEventListener('change', function (e) {
+      var id = e.target.getAttribute && e.target.getAttribute('data-id'); if (id == null) return;
+      if (e.target.checked) selRegions[id] = 1; else delete selRegions[id];
+      regionChanged();
+    });
+    $('rf-sel').addEventListener('click', function (e) {
+      var t = e.target.closest('[data-id]'); if (!t) return;
+      delete selRegions[t.getAttribute('data-id')]; regionChanged(); renderRegionList();
+    });
+    $('rf-all').onclick = function () { regionsByFilter().forEach(function (F) { selRegions[F.id] = 1; }); regionChanged(); renderRegionList(); };
+    $('rf-clear').onclick = function () { selRegions = {}; regionChanged(); renderRegionList(); };
+    $('rf-fit').onclick = function () {
+      var sel = SIGG.regions.filter(function (F) { return selRegions[F.id]; });
+      fitRegions(sel.length ? sel : ((rfSido || rfQuery) ? regionsByFilter() : []));
+    };
+
     /* ---------- 분석 (구역 판정 · 가까운 구역 · 반경) ---------- */
     var radiusM = 0;
     function analyze(lat, lng) {
@@ -496,7 +637,7 @@
       var res = { perLayer: [], region: '', within: [] };
 
       SIGG.records.some(function (r) {
-        if (inBBox(lng, lat, r.bbox) && inPolygon(lng, lat, r.rings)) { res.region = r.name; return true; }
+        if (inBBox(lng, lat, r.bbox) && inPolygon(lng, lat, r.rings)) { res.region = r.feat ? r.feat.label : r.name; res.regionRec = r.feat || null; return true; }
         return false;
       });
 
@@ -567,6 +708,7 @@
       cur = { lat: lat, lng: lng, addr: '', name: opts.name || '' };
       drawPin(lat, lng);
       var a = analyze(lat, lng);
+      cur.regionRec = a.regionRec || null;
 
       var notReady = AREA.filter(function (L) { return !L.loaded; });
       var hitLayers = a.perLayer.filter(function (p) { return p.hits.length; });
@@ -630,7 +772,7 @@
         '<div class="sec"><h4>비행 반경 확인</h4><div class="chips">' + chips + '</div>' + (radiusHtml ? '<div style="margin-top:6px;">' + radiusHtml + '</div>' : '') + '</div>' +
         '<div class="sec"><h4>위치 정보</h4>' +
           '<div class="kv"><span class="k">주소</span><span class="v" id="d-addr">조회 중…</span></div>' +
-          (a.region ? '<div class="kv"><span class="k">행정구역</span><span class="v">' + esc(a.region) + '</span></div>' : '') +
+          (a.region ? '<div class="kv"><span class="k">행정구역</span><span class="v">' + esc(a.region) + (a.regionRec ? ' <button class="chip" data-act="region-only">이 지역만 행정계 표시</button>' : '') + '</span></div>' : '') +
           '<div class="kv"><span class="k">좌표</span><span class="v">' + la + ', ' + lo + ' <button class="chip" data-act="copy-coord">복사</button></span></div>' +
           '<div class="kv"><span class="k">지형 고도</span><span class="v" id="d-elev">조회 중…</span></div>' +
           (sunHtml ? '<div class="kv"><span class="k">오늘</span><span class="v">' + sunHtml + '</span></div>' : '') +
@@ -698,6 +840,9 @@
       var t = e.target.closest('[data-act]'); if (!t || !cur) return;
       var act = t.getAttribute('data-act');
       if (act === 'close') closeDetail();
+      else if (act === 'region-only') {
+        if (cur.regionRec) { selRegions = {}; selRegions[cur.regionRec.id] = 1; regionChanged(); renderRegionList(); toast(cur.regionRec.label + ' 행정계만 표시 중 (해제: 레이어 패널)'); }
+      }
       else if (act === 'copy-coord') copyText(cur.lat.toFixed(6) + ', ' + cur.lng.toFixed(6), '좌표를 복사했어요');
       else if (act === 'copy-addr') copyText(cur.addr || (cur.lat.toFixed(6) + ', ' + cur.lng.toFixed(6)), '주소를 복사했어요');
       else if (act === 'copy-link') copyText(location.origin + location.pathname + '#' + cur.lat.toFixed(6) + ',' + cur.lng.toFixed(6) + ',' + map.getLevel(), '링크를 복사했어요');
